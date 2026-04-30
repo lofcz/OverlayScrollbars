@@ -1,5 +1,6 @@
 import type { StaticPlugin } from '../plugins';
-import { animateNumber, noop, selfClearTimeout } from '../../support';
+import { animateNumber, assignDeep, isFunction, noop, selfClearTimeout } from '../../support';
+import { ScrollbarsClickScrollBehavior, ScrollbarsClickScrollBehaviorOptions } from '../../options';
 
 export const clickScrollPluginModuleName = '__osClickScrollPlugin';
 
@@ -8,78 +9,134 @@ export const ClickScrollPlugin = /* @__PURE__ */ (() => ({
     static:
       () =>
       (
+        scrollRelative: (deltaScroll: number) => void,
         moveHandleRelative: (deltaMovement: number) => void,
-        targetOffset: number,
-        handleLength: number,
+        getHandleOffset: () => number,
+        targetDeltaMovement: number,
+        viewportSize: number,
+        clickScrollOption: ScrollbarsClickScrollBehavior,
+        isHorizontal: boolean,
         onClickScrollCompleted: (stopped: boolean) => void
       ) => {
         // click scroll animation has 2 main parts:
-        // 1. the "click" which scrolls 100% of the viewport in a certain amount of time
-        // 2. the "press" which scrolls to the point where the cursor is located, the "press" always waits for the "click" to finish
+        // 1. the "click"
+        // 2. the "press" which scrolls to the point where the cursor is located
         // The "click" should not be canceled by a "pointerup" event because very fast clicks or taps would cancel it too fast
         // The "click" should only be canceled by a subsequent "pointerdown" event because otherwise 2 animations would run
         // The "press" should be canceld by the next "pointerup" event
 
+        // the animation flow:
+        // 1. The "click" which scroll distance x in a certain amount of time
+        // 2. Short delay after the click animation until the press animation starts
+        // 3. The press animation determines how many viewportSize distances it needs to reach the end point
+        // 4. The press animation wants to always finish the last viewportSize distance with a "ease out" animation
+        //    If the press animation needs to travel <=2.2 viewportSize distances to the target its a single "ease in out" animation
+        //    Otherwise the press animation does a linear scroll animation to (targetPoistion - clickDistance)
+        //    And the last viewportSize distance is then a "ease out" animation
+
         let stopped = false;
         let stopPressAnimation = noop;
-        const linearScrollMs = 133;
-        const easedScrollMs = 222;
-        const [setPressAnimationTimeout, clearPressAnimationTimeout] =
-          selfClearTimeout(linearScrollMs);
-        const targetOffsetSign = Math.sign(targetOffset);
-        const handleLengthWithTargetSign = handleLength * targetOffsetSign;
-        const handleLengthWithTargetSignHalf = handleLengthWithTargetSign / 2;
-        const easing = (x: number) => 1 - (1 - x) * (1 - x); // easeOutQuad;
-        const easedEndPressAnimation = (from: number, to: number) =>
-          animateNumber(from, to, easedScrollMs, moveHandleRelative, easing);
-        const linearPressAnimation = (linearFrom: number, msFactor: number) =>
-          animateNumber(
-            linearFrom,
-            targetOffset - handleLengthWithTargetSign,
-            linearScrollMs * msFactor,
-            (progress, _, completed) => {
-              moveHandleRelative(progress);
-
-              if (completed) {
-                stopPressAnimation = easedEndPressAnimation(progress, targetOffset);
-              }
-            }
+        const defaultClickScrollOptions: ScrollbarsClickScrollBehaviorOptions = {
+          clickScrollDistance: viewportSize,
+          clickScrollDuration: 200,
+          clickPressDelay: 150,
+          pressDistanceDuration: 90,
+        };
+        const easeOutQuad = (x: number) => 1 - (1 - x) * (1 - x);
+        const easeInOutQuad = (x: number) =>
+          x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+        const { clickScrollDistance, clickScrollDuration, clickPressDelay, pressDistanceDuration } =
+          assignDeep(
+            {},
+            defaultClickScrollOptions,
+            isFunction(clickScrollOption)
+              ? clickScrollOption(isHorizontal)
+              : defaultClickScrollOptions
           );
+        const clickScrollDistanceIsTargetDeltaMovement = clickScrollDistance === 0;
+        const pressInOutMs = pressDistanceDuration * 2.3;
+        const pressOutMs = pressDistanceDuration * 2.5;
+        const viewportSizeScalingFactor = clickScrollDistance
+          ? viewportSize / clickScrollDistance
+          : 0;
+        const [setPressAnimationTimeout, clearPressAnimationTimeout] = selfClearTimeout(
+          // use a at least a very small delay here so `afterClickHandleOffset` is not the same as `beforeClickHandleOffset` because scroll didn't happen yet
+          Math.max(22, clickPressDelay)
+        );
+        const beforeClickHandleOffset = getHandleOffset();
+        const targetDeltaMovementSign = Math.sign(targetDeltaMovement);
+
         const stopClickAnimation = animateNumber(
           0,
-          handleLengthWithTargetSign,
-          easedScrollMs,
+          clickScrollDistanceIsTargetDeltaMovement
+            ? targetDeltaMovement
+            : clickScrollDistance * targetDeltaMovementSign,
+          clickScrollDuration,
           (clickAnimationProgress, _, clickAnimationCompleted) => {
-            moveHandleRelative(clickAnimationProgress);
+            if (clickScrollDistanceIsTargetDeltaMovement) {
+              moveHandleRelative(clickAnimationProgress);
+            } else {
+              scrollRelative(clickAnimationProgress);
+            }
 
             if (clickAnimationCompleted) {
               onClickScrollCompleted(stopped);
 
-              if (!stopped) {
-                const remainingScrollDistance = targetOffset - clickAnimationProgress;
+              setPressAnimationTimeout(() => {
+                if (stopped || clickScrollDistanceIsTargetDeltaMovement || !pressDistanceDuration) {
+                  return;
+                }
+
+                const afterClickHandleOffset = getHandleOffset();
+                const clickScrollHandleDeltaMovement =
+                  afterClickHandleOffset - beforeClickHandleOffset;
+                const clickScrollHandleDeltaMovementViewportSize =
+                  clickScrollHandleDeltaMovement * viewportSizeScalingFactor;
+                const remainingTargetOffsetDistance =
+                  targetDeltaMovement - clickScrollHandleDeltaMovement;
+                const remainingClickScrollHandleDeltaMovements =
+                  clickScrollHandleDeltaMovementViewportSize
+                    ? remainingTargetOffsetDistance / clickScrollHandleDeltaMovementViewportSize
+                    : 0;
+                const isInOutAnimation = remainingClickScrollHandleDeltaMovements <= 2.2;
+                const durationScalingFactor = Math.max(
+                  1,
+                  remainingClickScrollHandleDeltaMovements || 0
+                );
                 const continueWithPress =
-                  Math.sign(remainingScrollDistance - handleLengthWithTargetSignHalf) ===
-                  targetOffsetSign;
+                  (!remainingClickScrollHandleDeltaMovements ||
+                    remainingClickScrollHandleDeltaMovements > 0.5) &&
+                  Math.sign(remainingTargetOffsetDistance) === targetDeltaMovementSign;
 
                 if (continueWithPress) {
-                  setPressAnimationTimeout(() => {
-                    const remainingLinearScrollDistance =
-                      remainingScrollDistance - handleLengthWithTargetSign;
-                    const linearBridge =
-                      Math.sign(remainingLinearScrollDistance) === targetOffsetSign;
+                  stopPressAnimation = animateNumber(
+                    clickScrollHandleDeltaMovement,
+                    isInOutAnimation
+                      ? targetDeltaMovement
+                      : targetDeltaMovement - clickScrollHandleDeltaMovementViewportSize,
+                    isInOutAnimation
+                      ? pressInOutMs * durationScalingFactor
+                      : pressDistanceDuration * durationScalingFactor,
+                    (progress, _, completed) => {
+                      moveHandleRelative(progress);
 
-                    stopPressAnimation = linearBridge
-                      ? linearPressAnimation(
-                          clickAnimationProgress,
-                          Math.abs(remainingLinearScrollDistance) / handleLength
-                        )
-                      : easedEndPressAnimation(clickAnimationProgress, targetOffset);
-                  });
+                      if (completed && !isInOutAnimation) {
+                        stopPressAnimation = animateNumber(
+                          progress,
+                          targetDeltaMovement,
+                          pressOutMs,
+                          moveHandleRelative,
+                          easeOutQuad
+                        );
+                      }
+                    },
+                    isInOutAnimation && easeInOutQuad
+                  );
                 }
-              }
+              });
             }
           },
-          easing
+          easeInOutQuad
         );
 
         return (stopClick?: boolean) => {

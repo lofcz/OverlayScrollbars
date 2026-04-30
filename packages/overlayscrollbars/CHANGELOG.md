@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.15.2
+
+### Bug Fixes
+
+- Make sure the expensive "non default flow direction" check is not running when it shouldn't. [#756](https://github.com/KingSora/OverlayScrollbars/issues/756)
+
+## 2.15.1
+
+### Improvements
+
+- The `instance.sleep` function will now also put the `scrollbars.autoHide` timer to sleep.
+
+## 2.15.0
+
+### Features
+
+- The option `options.scrollbars.clickScroll` now also accepts a function which can be used to customize the click scroll behavior. [#754](https://github.com/KingSora/OverlayScrollbars/issues/754)
+- Added the `instance.sleep` function. Can be used to optimize performance or visual feedback. (for example during animations) [#755](https://github.com/KingSora/OverlayScrollbars/pull/755)
+
 ## 2.14.0
 
 ### Features

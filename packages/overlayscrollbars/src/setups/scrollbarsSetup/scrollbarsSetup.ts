@@ -4,12 +4,13 @@ import type {
   ObserversSetupState,
   ObserversSetupUpdateHints,
   Setup,
+  SetupsInstanceState,
   SetupUpdateInfo,
   StructureSetupState,
   StructureSetupUpdateHints,
 } from '../../setups';
 import type { InitializationTarget } from '../../initialization';
-import type { OverflowStyle } from '../../typings';
+import type { DeepReadonly, OverflowStyle } from '../../typings';
 import type { StructureSetupElementsObj } from '../structureSetup/structureSetup.elements';
 import {
   classNameScrollbarThemeNone,
@@ -46,14 +47,14 @@ import {
 export interface ScrollbarsSetupState {}
 
 export interface ScrollbarsSetupUpdateInfo extends SetupUpdateInfo {
-  _observersUpdateHints?: ObserversSetupUpdateHints;
-  _structureUpdateHints?: StructureSetupUpdateHints;
+  _observersUpdateHints?: DeepReadonly<ObserversSetupUpdateHints>;
+  _structureUpdateHints?: DeepReadonly<StructureSetupUpdateHints>;
 }
 
 export type ScrollbarsSetup = [
   ...Setup<ScrollbarsSetupUpdateInfo, ScrollbarsSetupState, void>,
   /** The elements created by the scrollbars setup. */
-  ScrollbarsSetupElementsObj,
+  DeepReadonly<ScrollbarsSetupElementsObj>,
   /** Force-hide or un-hide scrollbars, bypassing all auto-show logic. */
   (hidden: boolean) => void,
 ];
@@ -61,9 +62,10 @@ export type ScrollbarsSetup = [
 export const createScrollbarsSetup = (
   target: InitializationTarget,
   options: ReadonlyOptions,
-  observersSetupState: ObserversSetupState,
-  structureSetupState: StructureSetupState,
-  structureSetupElements: StructureSetupElementsObj,
+  setupsInstanceState: DeepReadonly<SetupsInstanceState>,
+  observersSetupState: DeepReadonly<ObserversSetupState>,
+  structureSetupState: DeepReadonly<StructureSetupState>,
+  structureSetupElements: DeepReadonly<StructureSetupElementsObj>,
   onScroll: (event: Event) => void
 ): ScrollbarsSetup => {
   let mouseInHost: boolean | undefined;
@@ -75,6 +77,13 @@ export const createScrollbarsSetup = (
   let instanceAutoHideDelay = 0;
   let forcedHidden = false;
   const hoverablePointerTypes = ['mouse', 'pen'];
+  const skipEventIfSleeping =
+    <T extends Event>(fn: (event: T) => void): ((event: T) => void) =>
+    (event: T) => {
+      if (!setupsInstanceState._sleeping) {
+        fn(event);
+      }
+    };
 
   // needed to not fire unnecessary operations for pointer events on ios safari which will cause side effects: https://github.com/KingSora/OverlayScrollbars/issues/560
   const isHoverablePointerType = (event: PointerEvent) =>
@@ -83,7 +92,7 @@ export const createScrollbarsSetup = (
   const [requestScrollAnimationFrame, cancelScrollAnimationFrame] = selfClearTimeout();
   const [autoHideInstantInteractionTimeout, clearAutoHideInstantInteractionTimeout] =
     selfClearTimeout(100);
-  const [autoHideSuspendTimeout, clearAutoHideSuspendTimeout] = selfClearTimeout(100);
+  const [autoHideSuspendTimeout, clearAutoHideSuspendTimeout] = selfClearTimeout(50);
   const [auotHideTimeout, clearAutoHideTimeout] = selfClearTimeout(() => instanceAutoHideDelay);
   const [elements, appendElements] = createScrollbarsSetupElements(
     target,
@@ -93,6 +102,7 @@ export const createScrollbarsSetup = (
       options,
       structureSetupElements,
       structureSetupState,
+      skipEventIfSleeping,
       (event) => isHoverablePointerType(event) && manageScrollbarsAutoHideInstantInteraction()
     )
   );
@@ -107,14 +117,22 @@ export const createScrollbarsSetup = (
   const manageScrollbarsAutoHide = (removeAutoHide: boolean, delayless?: boolean) => {
     clearAutoHideTimeout();
     if (forcedHidden) return;
+
+    const hide = (add?: boolean) => {
+      if (setupsInstanceState._sleeping) {
+        return;
+      }
+      _scrollbarsAddRemoveClass(classNameScrollbarAutoHideHidden, add);
+    };
+
     if (removeAutoHide) {
-      _scrollbarsAddRemoveClass(classNameScrollbarAutoHideHidden);
+      hide();
     } else {
-      const hide = bind(_scrollbarsAddRemoveClass, classNameScrollbarAutoHideHidden, true);
+      const add = autoHideIsLeave ? !mouseInHost : true;
       if (instanceAutoHideDelay > 0 && !delayless) {
-        auotHideTimeout(hide);
+        auotHideTimeout(bind(hide, add));
       } else {
-        hide();
+        hide(add);
       }
     }
   };
@@ -127,18 +145,26 @@ export const createScrollbarsSetup = (
       });
     }
   };
+  const onHostMouseEnter = (event: PointerEvent) => {
+    if (isHoverablePointerType(event)) {
+      mouseInHost = true;
+      if (!setupsInstanceState._sleeping && autoHideIsLeave) {
+        manageScrollbarsAutoHide(true);
+      }
+    }
+  };
+  const onHostMouseLeave = (event: PointerEvent) => {
+    if (isHoverablePointerType(event)) {
+      mouseInHost = false;
+      if (!setupsInstanceState._sleeping && autoHideIsLeave) {
+        manageScrollbarsAutoHide(false);
+      }
+    }
+  };
   const manageAutoHideSuspension = (add: boolean) => {
     if (forcedHidden && !add) return;
     _scrollbarsAddRemoveClass(classNameScrollbarAutoHide, add, true);
     _scrollbarsAddRemoveClass(classNameScrollbarAutoHide, add, false);
-  };
-  const onHostMouseEnter = (event: PointerEvent) => {
-    if (isHoverablePointerType(event)) {
-      mouseInHost = autoHideIsLeave;
-      if (autoHideIsLeave) {
-        manageScrollbarsAutoHide(true);
-      }
-    }
   };
   const destroyFns: (() => void)[] = [
     clearAutoHideTimeout,
@@ -149,29 +175,30 @@ export const createScrollbarsSetup = (
 
     addEventListener(_host, 'pointerover', onHostMouseEnter, { _once: true }),
     addEventListener(_host, 'pointerenter', onHostMouseEnter),
-    addEventListener(_host, 'pointerleave', (event: PointerEvent) => {
-      if (isHoverablePointerType(event)) {
-        mouseInHost = false;
-        if (autoHideIsLeave) {
-          manageScrollbarsAutoHide(false);
+    addEventListener(_host, 'pointerleave', onHostMouseLeave),
+    addEventListener(
+      _host,
+      'pointermove',
+      skipEventIfSleeping((event: PointerEvent) => {
+        if (isHoverablePointerType(event) && autoHideIsMove) {
+          manageScrollbarsAutoHideInstantInteraction();
         }
-      }
-    }),
-    addEventListener(_host, 'pointermove', (event: PointerEvent) => {
-      if (isHoverablePointerType(event) && autoHideIsMove) {
-        manageScrollbarsAutoHideInstantInteraction();
-      }
-    }),
-    addEventListener(_scrollEventElement, 'scroll', (event) => {
-      requestScrollAnimationFrame(() => {
-        _refreshScrollbarsHandleOffset();
-        manageScrollbarsAutoHideInstantInteraction();
-      });
+      })
+    ),
+    addEventListener(
+      _scrollEventElement,
+      'scroll',
+      skipEventIfSleeping((event) => {
+        requestScrollAnimationFrame(() => {
+          _refreshScrollbarsHandleOffset();
+          manageScrollbarsAutoHideInstantInteraction();
+        });
 
-      onScroll(event);
+        onScroll(event);
 
-      _refreshScrollbarsScrollbarOffset();
-    }),
+        _refreshScrollbarsScrollbarOffset();
+      })
+    ),
   ];
   const scrollbarsHidingPlugin = getStaticPluginModuleInstance<typeof ScrollbarsHidingPlugin>(
     scrollbarsHidingPluginName
@@ -215,7 +242,6 @@ export const createScrollbarsSetup = (
       const [clickScroll, clickScrollChanged] = _checkOption('scrollbars.clickScroll');
       const [overflow, overflowChanged] = _checkOption('overflow');
       const trulyAppeared = _appear && !_force;
-      const hasOverflow = _hasOverflow.x || _hasOverflow.y;
       const updateScrollbars =
         _overflowEdgeChanged ||
         _overflowAmountChanged ||
@@ -246,25 +272,6 @@ export const createScrollbarsSetup = (
 
       instanceAutoHideDelay = autoHideDelay;
 
-      if (trulyAppeared) {
-        if (autoHideSuspend && hasOverflow) {
-          manageAutoHideSuspension(false);
-          instanceAutoHideSuspendScrollDestroyFn();
-          autoHideSuspendTimeout(() => {
-            instanceAutoHideSuspendScrollDestroyFn = addEventListener(
-              _scrollEventElement,
-              'scroll',
-              bind(manageAutoHideSuspension, true),
-              {
-                _once: true,
-              }
-            );
-          });
-        } else {
-          manageAutoHideSuspension(true);
-        }
-      }
-
       if (showNativeOverlaidScrollbarsChanged || cantHideScrollbars) {
         _scrollbarsAddRemoveClass(classNameScrollbarThemeNone, showNativeScrollbars);
       }
@@ -276,14 +283,33 @@ export const createScrollbarsSetup = (
         prevTheme = theme;
       }
 
-      if (autoHideSuspendChanged && !autoHideSuspend) {
-        manageAutoHideSuspension(true);
+      if (autoHideSuspendChanged || trulyAppeared) {
+        manageAutoHideSuspension(!autoHideSuspend);
+
+        if (trulyAppeared && autoHideSuspend) {
+          if (_hasOverflow.x || _hasOverflow.y) {
+            instanceAutoHideSuspendScrollDestroyFn();
+            autoHideSuspendTimeout(() => {
+              instanceAutoHideSuspendScrollDestroyFn = addEventListener(
+                _scrollEventElement,
+                strScroll,
+                skipEventIfSleeping(bind(manageAutoHideSuspension, true)),
+                {
+                  _once: true,
+                }
+              );
+            });
+          } else {
+            manageAutoHideSuspension(true);
+          }
+        }
       }
 
       if (autoHideChanged) {
         autoHideIsMove = autoHide === 'move';
         autoHideIsLeave = autoHide === 'leave';
         autoHideIsNever = autoHide === 'never';
+
         manageScrollbarsAutoHide(autoHideIsNever, true);
       }
 

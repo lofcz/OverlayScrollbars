@@ -138,10 +138,26 @@ export type ScrollbarsAutoHideBehavior =
   /** The scrollbars are hidden if the pointer leaves the host element or unless the user scrolls. */
   | 'leave';
 
+export interface ScrollbarsClickScrollBehaviorOptions {
+  /** The scroll distance of the click scroll. If `0` the `clickScrollDistance` is the destination distance. Default: `one viewport unit`. */
+  clickScrollDistance: number;
+  /** The duration in milliseconds it takes to scroll the `clickScrollDistance`. Default `200`. */
+  clickScrollDuration: number;
+  /** The delay in milliseconds between click and press scroll. Default: `150`. */
+  clickPressDelay: number;
+  /** The duration in milliseconds it takes to travel one viewport unit during press scroll. Default: `90`. */
+  pressDistanceDuration: number;
+}
+
 /**
  * The scrollbar click scroll behavior.
  */
-export type ScrollbarsClickScrollBehavior = boolean | 'instant';
+export type ScrollbarsClickScrollBehavior =
+  | boolean
+  | 'instant'
+  | ((
+      isHorizontal: boolean
+    ) => Partial<ScrollbarsClickScrollBehaviorOptions> | false | null | undefined | void);
 
 /**
  * If a tuple is provided you can customize the `timeout` and the `maxWait` in milliseconds. The third value `leading` indicates whether the debounce is also executed on the leading edge.
@@ -205,7 +221,7 @@ export type Options = {
      * @param mutation The MutationRecord from the MutationObserver.
      * @returns A Truthy value if the mutation shall be ignored, a falsy value otherwise.
      */
-    ignoreMutation: ((mutation: MutationRecord) => boolean) | null;
+    ignoreMutation: ((mutation: MutationRecord) => boolean | null | undefined | void) | null;
     /**
      * A function which returns a map of styles which influence the viewports flow direction or `null` if the default behavior shall be used.
      * The default behavior reads the computed `display`, `flexDirection`, `direction` and `writingMode` styles of the viewport element.
@@ -221,7 +237,9 @@ export type Options = {
      * @param viewport The viewport element.
      * @returns A map of styles which influence the viewports flow direction.
      */
-    flowDirectionStyles: ((viewport: HTMLElement) => Record<string, unknown>) | null;
+    flowDirectionStyles:
+      | ((viewport: HTMLElement) => Record<string, unknown> | false | null | undefined | void)
+      | null;
   };
   /** Customizes the overflow behavior per axis. */
   overflow: {
