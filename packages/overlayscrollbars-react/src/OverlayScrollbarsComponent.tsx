@@ -43,12 +43,14 @@ const OverlayScrollbarsComponent = <T extends ElementType = 'div'>(
   const { element = 'div', options, events, defer, children, ...other } = props;
   const Tag = element;
   const elementRef = useRef<ElementRef<T>>(null);
-  const childrenRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [initialize, osInstance] = useOverlayScrollbars({ options, events, defer });
 
   useEffect(() => {
     const { current: elm } = elementRef;
-    const { current: contentsElm } = childrenRef;
+    const { current: viewportElm } = viewportRef;
+    const { current: contentElm } = contentRef;
 
     /* c8 ignore start */
     if (!elm) {
@@ -69,8 +71,8 @@ const OverlayScrollbarsComponent = <T extends ElementType = 'div'>(
         : {
             target,
             elements: {
-              viewport: contentsElm,
-              content: contentsElm,
+              viewport: viewportElm,
+              content: contentElm,
             },
           }
     );
@@ -90,8 +92,10 @@ const OverlayScrollbarsComponent = <T extends ElementType = 'div'>(
       {element === 'body' ? (
         children
       ) : (
-        <div data-overlayscrollbars-contents="" ref={childrenRef}>
-          {children}
+        <div ref={viewportRef}>
+          <div data-overlayscrollbars-contents="" ref={contentRef}>
+            {children}
+          </div>
         </div>
       )}
     </Tag>
